@@ -44,6 +44,7 @@ export interface MonitorEntry {
   ip: string;
   name: string;
   status: string;
+  online: boolean;
   signal: number | null;
 }
 

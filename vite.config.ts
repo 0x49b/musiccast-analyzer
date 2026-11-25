@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Tauri erwartet einen festen Port und ignoriert src-tauri beim Watchen
+// Tauri expects a fixed port; src-tauri is excluded from file watching
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,

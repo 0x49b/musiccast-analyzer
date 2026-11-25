@@ -1,5 +1,6 @@
-//! WLAN-Adapter und Scan ueber Windows-Bordmittel (PowerShell, netsh).
+//! Wi-Fi adapters and scanning with tools that ship with Windows (PowerShell, netsh).
 
+use crate::i18n::pick;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
@@ -20,7 +21,7 @@ pub struct Net {
     pub channel: u32,
 }
 
-/// Startet einen Prozess ohne aufblitzendes Konsolenfenster und liefert stdout.
+/// Runs a process without a console window flashing up and returns its stdout.
 fn run_hidden(cmd: &mut Command) -> Option<String> {
     #[cfg(windows)]
     {
@@ -32,7 +33,7 @@ fn run_hidden(cmd: &mut Command) -> Option<String> {
 }
 
 pub fn adapters() -> Vec<Adapter> {
-    // Bewusst ohne doppelte Anfuehrungszeichen, damit das Quoting der Kommandozeile trivial bleibt
+    // Deliberately free of double quotes so that command-line quoting stays trivial
     let script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
         Get-NetAdapter | Where-Object { [string]$_.PhysicalMediaType -match '802\\.11|Wireless' \
         -or $_.InterfaceDescription -match 'Wireless|Wi-?Fi|WLAN|802\\.11' } | \
@@ -46,7 +47,7 @@ pub fn adapters() -> Vec<Adapter> {
     ])) else {
         return Vec::new();
     };
-    // Ein Treffer ergibt ein Objekt, mehrere ein Array, keiner eine leere Ausgabe
+    // One match yields an object, several an array, none an empty output
     match serde_json::from_str::<serde_json::Value>(out.trim()) {
         Ok(v @ serde_json::Value::Array(_)) => serde_json::from_value(v).unwrap_or_default(),
         Ok(v @ serde_json::Value::Object(_)) => serde_json::from_value::<Adapter>(v)
@@ -61,20 +62,29 @@ pub fn scan(adapter: Option<&str>) -> Result<Vec<Net>, String> {
     cmd.args(["wlan", "show", "networks", "mode=bssid"]);
     if let Some(name) = adapter.map(str::trim).filter(|n| !n.is_empty()) {
         if name.contains('"') || !adapters().iter().any(|a| a.name == name) {
-            return Err(format!("Unbekannter Adapter: {name}"));
+            return Err(format!(
+                "{}: {name}",
+                pick("Unknown adapter", "Unbekannter Adapter")
+            ));
         }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            // netsh erwartet interface="Name mit Leerzeichen"
+            // netsh expects interface="name with spaces"
             cmd.raw_arg(format!("interface=\"{name}\""));
         }
     }
-    let out = run_hidden(&mut cmd).ok_or("netsh konnte nicht gestartet werden.")?;
+    let out = run_hidden(&mut cmd).ok_or_else(|| {
+        pick(
+            "netsh could not be started.",
+            "netsh konnte nicht gestartet werden.",
+        )
+        .to_owned()
+    })?;
     Ok(parse_netsh(&out))
 }
 
-/// Parst `netsh wlan show networks mode=bssid` (deutsch, englisch, franzoesisch, italienisch).
+/// Parses `netsh wlan show networks mode=bssid` (German, English, French, Italian output).
 pub fn parse_netsh(out: &str) -> Vec<Net> {
     let mut nets: Vec<Net> = Vec::new();
     let mut ssid = String::new();

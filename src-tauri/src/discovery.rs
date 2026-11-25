@@ -1,12 +1,13 @@
-//! Geraetesuche: SSDP plus Scan des /24-Subnetzes, danach Pruefung per YXC.
+//! Device discovery: SSDP plus a sweep of the /24 subnet, each candidate verified via YXC.
 
+use crate::i18n::pick;
 use crate::yxc;
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream, UdpSocket};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Lokale IPv4 der Schnittstelle mit Default-Route (es wird nichts gesendet).
+/// Local IPv4 address of the interface that holds the default route (nothing is sent).
 pub fn local_ip() -> Option<Ipv4Addr> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("8.8.8.8:80").ok()?;
@@ -40,7 +41,7 @@ fn ssdp(local: Ipv4Addr) -> Vec<Ipv4Addr> {
     found
 }
 
-/// Alle Hosts im /24 mit offenem Port 80. Verkabelte Geraete antworten nicht immer auf SSDP.
+/// All hosts in the /24 with port 80 open. Wired devices do not always answer SSDP.
 fn sweep(local: Ipv4Addr) -> Vec<Ipv4Addr> {
     let [a, b, c, _] = local.octets();
     let handles: Vec<_> = (1u8..=254)
@@ -61,7 +62,7 @@ fn sweep(local: Ipv4Addr) -> Vec<Ipv4Addr> {
 }
 
 pub fn find_devices() -> Result<Vec<String>, String> {
-    let local = local_ip().ok_or("Keine aktive Netzwerkverbindung gefunden.")?;
+    let local = local_ip().ok_or_else(no_network)?;
 
     let ssdp_handle = thread::spawn(move || ssdp(local));
     let mut candidates: BTreeSet<Ipv4Addr> = sweep(local).into_iter().collect();
@@ -82,8 +83,16 @@ pub fn find_devices() -> Result<Vec<String>, String> {
     Ok(devices.iter().map(Ipv4Addr::to_string).collect())
 }
 
-/// Nur private IPv4-Adressen (oder Loopback) als Geraeteadresse zulassen.
+/// Accept only private IPv4 addresses (or loopback) as device addresses.
 pub fn parse_private_ip(text: &str) -> Option<String> {
     let ip: Ipv4Addr = text.trim().parse().ok()?;
     (ip.is_private() || ip.is_loopback()).then(|| ip.to_string())
+}
+
+pub fn no_network() -> String {
+    pick(
+        "No active network connection found.",
+        "Keine aktive Netzwerkverbindung gefunden.",
+    )
+    .to_owned()
 }

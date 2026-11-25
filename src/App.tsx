@@ -4,12 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
+import { LANGS, codeText, isLang, messages } from "./i18n";
+import type { Lang, Messages } from "./i18n";
 import {
   WEAK_SIGNAL,
   bestChannel,
   channelLoad,
   channelScore,
-  codeText,
   defaultLocation,
   isExtended,
   isWired,
@@ -18,30 +19,19 @@ import {
   ownNetwork,
   recommendations,
 } from "./logic";
-import type { Adapter, Device, MonitorEntry, MonitorStatus, Net, RecLevel, Step, UpdateStatus } from "./types";
+import type { Adapter, Device, MonitorEntry, MonitorStatus, Net, Step, UpdateStatus } from "./types";
 
 type Theme = "system" | "light" | "dark";
-const THEMES: { id: Theme; label: string }[] = [
-  { id: "system", label: "System" },
-  { id: "light", label: "Hell" },
-  { id: "dark", label: "Dunkel" },
-];
-
-const LEVEL_LABEL: Record<RecLevel, string> = {
-  bad: "Problem",
-  warn: "Prüfen",
-  info: "Hinweis",
-  ok: "In Ordnung",
-};
+const THEMES: Theme[] = ["system", "light", "dark"];
 
 type View = "devices" | "wlan" | "monitor" | "settings";
 type DockTab = "hints" | "console";
 
-const VIEWS: { id: View; label: string; key: string }[] = [
-  { id: "devices", label: "Geräte", key: "Ctrl+1" },
-  { id: "wlan", label: "WLAN", key: "Ctrl+2" },
-  { id: "monitor", label: "Monitoring", key: "Ctrl+3" },
-  { id: "settings", label: "Einstellungen", key: "Ctrl+4" },
+const VIEWS: { id: View; key: string }[] = [
+  { id: "devices", key: "Ctrl+1" },
+  { id: "wlan", key: "Ctrl+2" },
+  { id: "monitor", key: "Ctrl+3" },
+  { id: "settings", key: "Ctrl+4" },
 ];
 
 interface ConsoleLine {
@@ -51,7 +41,6 @@ interface ConsoleLine {
   text: string;
 }
 let consoleSeq = 0;
-const clock = () => new Date().toLocaleTimeString("de-CH", { hour12: false });
 
 function load(key: string, fallback: string): string {
   try {
@@ -64,11 +53,11 @@ function save(key: string, value: string) {
   try {
     localStorage.setItem(key, value);
   } catch {
-    /* Speicher nicht verfuegbar: Einstellung gilt nur fuer diese Sitzung */
+    /* storage unavailable: the setting only lasts for this session */
   }
 }
 
-/** Symbole der Seitenleiste, 16px, eine Strichstaerke. */
+/** Sidebar icons, 16px, one stroke width. */
 function Icon({ name }: { name: View }) {
   const paths: Record<View, ReactNode> = {
     devices: (
@@ -95,18 +84,29 @@ function Icon({ name }: { name: View }) {
     ),
   };
   return (
-    <svg className="icon" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      className="icon"
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       {paths[name]}
     </svg>
   );
 }
 
-/** Pegelanzeige in zehn Segmenten, wie an einem Verstaerker. */
-function Meter({ value, max = 100 }: { value: number; max?: number }) {
+/** Level meter in ten segments, like on an amplifier. */
+function Meter({ value, label, max = 100 }: { value: number; label: string; max?: number }) {
   const lit = Math.max(0, Math.min(10, Math.round((value / max) * 10)));
   const tone = value < WEAK_SIGNAL ? "bad" : value < 60 ? "warn" : "ok";
   return (
-    <span className={`meter ${tone}`} role="img" aria-label={`Signal ${value}`}>
+    <span className={`meter ${tone}`} role="img" aria-label={label}>
       {Array.from({ length: 10 }, (_, i) => (
         <i key={i} className={i < lit ? "on" : ""} />
       ))}
@@ -114,31 +114,31 @@ function Meter({ value, max = 100 }: { value: number; max?: number }) {
   );
 }
 
-/** Kurztext fuer die Statusleiste; leer, wenn es nichts zu melden gibt. */
-function updateText(u: UpdateStatus | null): string {
+/** Short text for the status bar; empty when there is nothing to report. */
+function updateText(t: Messages, u: UpdateStatus | null): string {
   if (!u) return "";
   switch (u.phase) {
     case "checking":
-      return "Suche nach Updates ...";
+      return t.update.checking;
     case "downloading":
-      return `Lade Update ${u.version ?? ""}${u.percent != null ? `, ${u.percent} %` : ""}`;
+      return t.update.downloading(u.version ?? "", u.percent);
     case "installing":
-      return `Installiere Update ${u.version ?? ""}, die App startet neu`;
+      return t.update.installing(u.version ?? "");
     case "error":
-      return "Update-Prüfung fehlgeschlagen";
+      return t.update.failed;
     default:
       return "";
   }
 }
 
-function connectionLabel(d: Device): string {
-  if (isWired(d)) return "Kabel";
-  if (isExtended(d)) return "Erweitert";
-  if (isWireless(d)) return "WLAN";
+function connectionLabel(t: Messages, d: Device): string {
+  if (isWired(d)) return t.connection.wired;
+  if (isExtended(d)) return t.connection.extended;
+  if (isWireless(d)) return t.connection.wifi;
   return d.connection ?? "";
 }
-function roleLabel(d: Device): string {
-  return d.role === "server" ? "Master" : d.role === "client" ? "Client" : "kein Link";
+function roleLabel(t: Messages, d: Device): string {
+  return d.role === "server" ? t.role.master : d.role === "client" ? t.role.client : t.role.none;
 }
 
 export default function App() {
@@ -151,8 +151,17 @@ export default function App() {
     const stored = load("mc-theme", "system");
     return stored === "light" || stored === "dark" ? stored : "system";
   });
+  // English is the default; the last choice is restored after a restart
+  const [lang, setLang] = useState<Lang>(() => {
+    const stored = load("mc-lang", "en");
+    return isLang(stored) ? stored : "en";
+  });
+  const t = messages[lang];
+  // Callbacks read the current language through this ref, so they need not be recreated
+  const tRef = useRef(t);
+  tRef.current = t;
 
-  // Farbschema anwenden: Oberflaeche ueber data-theme, Titelleiste und Menue ueber das Fenster
+  // Apply the colour scheme: the UI through data-theme, title bar and menu through the window
   useEffect(() => {
     if (theme === "system") delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = theme;
@@ -162,9 +171,17 @@ export default function App() {
         .setTheme(theme === "system" ? null : theme)
         .catch(() => undefined);
     } catch {
-      /* ausserhalb von Tauri gibt es kein Fenster-Objekt */
+      /* outside of Tauri there is no window object */
     }
   }, [theme]);
+
+  // Apply the language: persist it and hand it to the Rust side, which translates the
+  // native menus, notifications and error messages
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    save("mc-lang", lang);
+    api.setLanguage(lang).catch(() => undefined);
+  }, [lang]);
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
   const [adapter, setAdapter] = useState("");
@@ -189,9 +206,9 @@ export default function App() {
   const [consoleLines, setConsoleLines] = useState<ConsoleLine[]>([]);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
 
-  /** Haengt Zeilen an die Konsole an (maximal 500 bleiben erhalten). */
+  /** Appends lines to the console (the latest 500 are kept). */
   const print = useCallback((level: ConsoleLine["level"], ...texts: string[]) => {
-    const time = clock();
+    const time = new Date().toLocaleTimeString(tRef.current.locale, { hour12: false });
     setConsoleLines((prev) =>
       [...prev, ...texts.map((text) => ({ id: ++consoleSeq, time, level, text }))].slice(-500),
     );
@@ -210,15 +227,15 @@ export default function App() {
     toastTimer.current = window.setTimeout(() => setToast(""), 4500);
   }, []);
 
-  /** Fuehrt eine Aktion mit Anzeige in der Statusleiste aus; Fehler landen in Konsole und Meldung. */
+  /** Runs an action with a status-bar message; errors go to the console and a toast. */
   const run = useCallback(
     async <T,>(text: string, action: () => Promise<T>): Promise<T | undefined> => {
       setBusy(text);
       try {
         return await action();
       } catch (e) {
-        notify(`Fehler: ${String(e)}`);
-        print("bad", `${text} Fehler: ${String(e)}`);
+        notify(tRef.current.error(String(e)));
+        print("bad", tRef.current.console.failed(text, String(e)));
         return undefined;
       } finally {
         setBusy("");
@@ -227,19 +244,20 @@ export default function App() {
     [notify, print],
   );
 
-  /** Schreibt die Einzelschritte einer Aktion mit Response-Code in die Konsole. */
+  /** Writes the individual steps of an action with their response codes to the console. */
   const printSteps = useCallback(
     (action: string, result: Step[]) => {
+      const tr = tRef.current;
       if (result.length === 0) {
-        print("info", `${action}: nichts zu tun (kein passendes Gerät).`);
+        print("info", tr.console.nothingToDo(action));
         return;
       }
       const bad = result.filter((s) => !s.ok).length;
-      print(bad ? "bad" : "info", `${action}: ${result.length} Schritte, ${bad} fehlgeschlagen`);
+      print(bad ? "bad" : "info", tr.console.summary(action, result.length, bad));
       for (const s of result) {
-        print(s.ok ? "ok" : "bad", `  ${s.ok ? "OK  " : "FAIL"} ${s.step}  (Code ${codeText(s.code)})`);
+        print(s.ok ? "ok" : "bad", tr.console.stepLine(s.ok, s.step, codeText(tr, s.code)));
       }
-      // Fehlgeschlagene Schritte holen die Konsole nach vorn
+      // Failed steps bring the console to the front
       if (bad) {
         setDockOpen(true);
         setDockTab("console");
@@ -259,15 +277,24 @@ export default function App() {
 
   const discover = useCallback(
     async (ips?: string[]) => {
-      const list = await run("Suche Geräte im Netzwerk ...", () => api.discover(ips));
+      const list = await run(tRef.current.busy.discover, () => api.discover(ips));
       if (!list) return;
       applyDevices(list);
+      const tr = tRef.current;
       print(
         "info",
-        `Gerätesuche: ${list.length} gefunden`,
-        ...list.map(
-          (d) =>
-            `  ${d.ip}  ${d.online ? `${d.name ?? "?"} (${d.model ?? "?"}, ${d.connection ?? "?"}, Standort «${d.locationName ?? "?"}» ${d.locationId ?? ""})` : "offline"}`,
+        tr.console.discovery(list.length),
+        ...list.map((d) =>
+          d.online
+            ? tr.console.deviceLine(
+                d.ip,
+                d.name ?? "?",
+                d.model ?? "?",
+                d.connection ?? "?",
+                d.locationName ?? "?",
+                d.locationId ?? "",
+              )
+            : tr.console.offlineLine(d.ip),
         ),
       );
     },
@@ -275,19 +302,20 @@ export default function App() {
   );
 
   const refresh = useCallback(async () => {
-    const list = await run("Frage Geräte ab ...", () => api.getDevices());
+    const list = await run(tRef.current.busy.refresh, () => api.getDevices());
     if (list) applyDevices(list);
   }, [run, applyDevices]);
 
   const scan = useCallback(async () => {
     save("mc-adapter", adapter);
-    const list = await run("Scanne WLAN ...", () => api.scanWlan(adapter));
+    const list = await run(tRef.current.busy.scan, () => api.scanWlan(adapter));
     if (!list) return;
     setNets(list);
-    print("info", `WLAN-Scan über ${adapter || "alle Adapter"}: ${list.length} Netze`);
+    const tr = tRef.current;
+    print("info", tr.console.scan(adapter || tr.console.allAdapters, list.length));
   }, [run, adapter, print]);
 
-  const recs = useMemo(() => recommendations(devices, nets, staticDone), [devices, nets, staticDone]);
+  const recs = useMemo(() => recommendations(t, devices, nets, staticDone), [t, devices, nets, staticDone]);
   const own = useMemo(() => ownNetwork(devices), [devices]);
   const nets24 = useMemo(() => (nets ?? []).filter((n) => n.channel >= 1 && n.channel <= 14), [nets]);
   const best = useMemo(() => (nets ? bestChannel(nets, own?.ssid ?? null) : null), [nets, own]);
@@ -295,7 +323,7 @@ export default function App() {
   const maxLoad = Math.max(1, ...loads);
   const locations = useMemo(() => locationsOf(devices), [devices]);
   const mixedLocations = locations.length > 1;
-  // Ohne Auswahl gilt «Home» (bzw. der groesste Standort, falls es kein «Home» gibt)
+  // Without a selection the target is "Home" (or the largest location if there is no "Home")
   const target = locations.find((l) => l.id === targetLocation) ?? defaultLocation(locations);
   const toMove = target ? devices.filter((d) => d.online && d.locationId !== target.id) : [];
   const current = devices.find((d) => d.ip === selected) ?? null;
@@ -310,39 +338,37 @@ export default function App() {
   const doLink = async () => {
     const list = [...clients].filter((ip) => ip !== master);
     if (!master || list.length === 0) {
-      notify("Einen Master und mindestens einen Client ankreuzen.");
+      notify(t.notify.chooseMasterClient);
       return;
     }
-    showSteps("Verlinken", await run("Verlinke Geräte ...", () => api.link(master, list, groupName.trim())));
+    showSteps(t.action.link, await run(t.busy.link, () => api.link(master, list, groupName.trim())));
   };
 
   const doUnlink = async () => {
-    showSteps("Links auflösen", await run("Löse Links auf ...", () => api.unlink()));
+    showSteps(t.action.unlink, await run(t.busy.unlink, () => api.unlink()));
   };
 
   const doWired = async (ip: string) => {
     setConfirmWired(null);
-    const step = await run("Stelle auf Kabel um ...", () => api.switchToWired(ip));
+    const step = await run(t.busy.wired, () => api.switchToWired(ip));
     if (!step) return;
-    printSteps("Auf Kabel umstellen", [step]);
-    if (step.ok) {
-      notify("Umgestellt. Das Gerät bezieht jetzt per Kabel eine neue IP. In 1 bis 2 Minuten neu suchen (F5).");
-    }
+    printSteps(t.action.wired, [step]);
+    if (step.ok) notify(t.notify.wiredDone);
   };
 
   const doSetLocation = async () => {
     setConfirmLocation(false);
     if (!target || toMove.length === 0) return;
-    // Geraete in einer Link-Gruppe sperren die Aenderung (Code 5): Gruppe zuerst aufloesen
+    // Devices in a link group guard this setting (code 5): dissolve the group first
     if (devices.some((d) => d.role === "server" || d.role === "client")) {
-      const unlinked = await run("Löse Links auf ...", () => api.unlink());
+      const unlinked = await run(t.busy.unlink, () => api.unlink());
       if (!unlinked) return;
-      printSteps("Links auflösen (vor Standortwechsel)", unlinked);
+      printSteps(t.action.unlinkBeforeLocation, unlinked);
       await new Promise((resolve) => window.setTimeout(resolve, 3000));
     }
     showSteps(
-      `Standort «${target.name}»`,
-      await run("Setze Standort ...", () =>
+      t.action.location(target.name),
+      await run(t.busy.location, () =>
         api.setLocation(
           toMove.map((d) => d.ip),
           target.id,
@@ -353,23 +379,23 @@ export default function App() {
   };
 
   const toggleMonitor = async () => {
-    const next = await run("Monitoring ...", () => (monitor?.on ? api.monitorStop() : api.monitorStart(interval)));
+    const next = await run(t.busy.monitor, () => (monitor?.on ? api.monitorStop() : api.monitorStart(interval)));
     if (!next) return;
     setMonitor(next);
-    print("info", next.on ? `Monitoring gestartet, alle ${next.interval} s` : "Monitoring gestoppt");
+    print("info", next.on ? t.console.monitorStarted(next.interval) : t.console.monitorStopped);
   };
 
   const applyLogPath = async (path: string) => {
-    const next = await run("Setze CSV-Pfad ...", () => api.monitorSetLogPath(path));
+    const next = await run(t.busy.csv, () => api.monitorSetLogPath(path));
     if (!next) return;
     setMonitor(next);
     setLogPathText(next.logPath ?? "");
     save("mc-logpath", next.customLogPath ? (next.logPath ?? "") : "");
-    print("info", `CSV-Pfad: ${next.logPath ?? "?"}`);
+    print("info", t.console.csvPath(next.logPath ?? "?"));
   };
 
-  // Befehle aus dem nativen Menue (und dessen Tastenkuerzeln) laufen ueber diese Tabelle.
-  // Die Ref haelt immer die Funktionen des aktuellen Renders.
+  // Commands from the native menu (and its keyboard shortcuts) are dispatched through this
+  // table. The ref always holds the functions of the current render.
   const commands = useRef<Record<string, () => void>>({});
   commands.current = {
     "view-devices": () => setView("devices"),
@@ -391,7 +417,7 @@ export default function App() {
     "toggle-monitor": () => void toggleMonitor(),
   };
 
-  // Start: Adapter und Monitoring-Status laden, Geraete suchen, auf Ereignisse hoeren
+  // Startup: load adapters and the monitoring state, find devices, listen for events
   useEffect(() => {
     api
       .getAdapters()
@@ -401,9 +427,9 @@ export default function App() {
         const usb = list.find((a) => /8812|USB/i.test(a.description));
         setAdapter(list.some((a) => a.name === stored) ? stored : (usb?.name ?? ""));
       })
-      .catch((e) => notify(`Adapter konnten nicht gelesen werden: ${String(e)}`));
+      .catch((e) => notify(tRef.current.notify.adaptersFailed(String(e))));
 
-    // Gespeicherten CSV-Pfad wiederherstellen; ist er ungueltig geworden, gilt der Standard
+    // Restore the stored CSV path; if it has become invalid, the default applies
     const storedPath = load("mc-logpath", "");
     (storedPath ? api.monitorSetLogPath(storedPath).catch(() => api.monitorStatus()) : api.monitorStatus())
       .then((s) => {
@@ -423,14 +449,15 @@ export default function App() {
       commands.current[event.payload]?.();
     });
 
-    // Update-Stand: einmal abholen (die Pruefung startet vor dem Laden der Oberflaeche), dann mithoeren
+    // Update state: fetch it once (the check starts before the UI has loaded), then listen
     const onUpdate = (u: UpdateStatus | null) => {
       if (!u) return;
       setUpdate(u);
-      if (u.phase === "downloading" && u.percent === 0) print("info", `Update ${u.version ?? ""} gefunden, lade herunter`);
-      if (u.phase === "installing") print("info", `Update ${u.version ?? ""} wird installiert, die App startet neu`);
-      if (u.phase === "current") print("info", "Die App ist aktuell.");
-      if (u.phase === "error") print("bad", `Update-Prüfung fehlgeschlagen: ${u.message ?? "unbekannter Fehler"}`);
+      const tr = tRef.current;
+      if (u.phase === "downloading" && u.percent === 0) print("info", tr.console.updateFound(u.version ?? ""));
+      if (u.phase === "installing") print("info", tr.console.updateInstalling(u.version ?? ""));
+      if (u.phase === "current") print("info", tr.console.updateCurrent);
+      if (u.phase === "error") print("bad", tr.console.updateFailed(u.message ?? tr.console.unknownError));
     };
     api
       .updateStatus()
@@ -443,11 +470,11 @@ export default function App() {
       offMenu.then((off) => off());
       offUpdate.then((off) => off());
     };
-    // Nur einmal beim Start
+    // Runs once at startup
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Hoehe des unteren Bereichs mit der Maus ziehen
+  // Drag the height of the bottom panel with the mouse
   const startDockResize = (e: ReactMouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -466,27 +493,29 @@ export default function App() {
     window.addEventListener("mouseup", up);
   };
 
-  // Das Kontextmenue des Browsers gehoert nicht in eine Desktop-App; in Textfeldern und
-  // markierbarem Text bleibt es, damit Kopieren und Einfuegen funktionieren.
+  // The browser's context menu has no place in a desktop app; it stays available in text
+  // fields and selectable text so that copy and paste keep working.
   const onContextMenu = (e: ReactMouseEvent) => {
     const el = e.target as HTMLElement;
     if (!el.closest("input, textarea, .selectable")) e.preventDefault();
   };
 
-  // ---------------------------------------------------------------- Ansicht: Geraete
+  const nameOf = (d: Device) => d.name ?? d.ip;
+
+  // ---------------------------------------------------------------- View: devices
   const devicesView = (
     <>
       <div className="toolbar">
-        <h1>Geräte</h1>
-        <button className="primary" disabled={!!busy} onClick={() => discover()} title="Im Netzwerk suchen (F5)">
-          Geräte suchen
+        <h1>{t.devices.title}</h1>
+        <button className="primary" disabled={!!busy} onClick={() => discover()} title={t.devices.findTitle}>
+          {t.devices.find}
         </button>
-        <button disabled={!!busy || devices.length === 0} onClick={refresh} title="Status neu abfragen (Ctrl+R)">
-          Aktualisieren
+        <button disabled={!!busy || devices.length === 0} onClick={refresh} title={t.devices.refreshTitle}>
+          {t.devices.refresh}
         </button>
         <span className="sep" />
         <label className="inline">
-          Gruppe
+          {t.devices.group}
           <input
             type="text"
             maxLength={32}
@@ -495,29 +524,27 @@ export default function App() {
             onChange={(e) => setGroupName(e.target.value)}
           />
         </label>
-        <button disabled={!!busy || !master} onClick={doLink} title="Angekreuzte Geräte verlinken (Ctrl+L)">
-          Verlinken
+        <button disabled={!!busy || !master} onClick={doLink} title={t.devices.linkTitle}>
+          {t.devices.link}
         </button>
         <button
           disabled={!!busy || !groupName.trim() || linked === 0}
           onClick={async () =>
-            showSteps("Gruppenname", await run("Setze Gruppennamen ...", () => api.setGroupName(groupName.trim())))
+            showSteps(t.action.groupName, await run(t.busy.groupName, () => api.setGroupName(groupName.trim())))
           }
         >
-          Namen setzen
+          {t.devices.setName}
         </button>
-        <button disabled={!!busy || linked === 0} onClick={doUnlink} title="Alle Gruppen auflösen (Ctrl+Shift+L)">
-          Links auflösen
+        <button disabled={!!busy || linked === 0} onClick={doUnlink} title={t.devices.unlinkTitle}>
+          {t.devices.unlink}
         </button>
       </div>
 
       {mixedLocations && target && (
         <div className="infobar">
-          <span className="infobar__text">
-            Die Geräte liegen in {locations.length} MusicCast-Standorten. Die Yamaha-App zeigt jeweils nur einen.
-          </span>
+          <span className="infobar__text">{t.devices.locationsInfo(locations.length)}</span>
           <label className="inline">
-            Ziel
+            {t.devices.target}
             <select
               value={target.id}
               onChange={(e) => {
@@ -527,7 +554,7 @@ export default function App() {
             >
               {locations.map((l) => (
                 <option key={l.id} value={l.id}>
-                  {l.name}, {l.id.slice(0, 8)} ({l.devices.map((d) => d.name ?? d.ip).join(", ")})
+                  {l.name}, {l.id.slice(0, 8)} ({l.devices.map(nameOf).join(", ")})
                 </option>
               ))}
             </select>
@@ -535,13 +562,13 @@ export default function App() {
           {confirmLocation ? (
             <>
               <button disabled={!!busy} onClick={doSetLocation}>
-                {toMove.map((d) => d.name ?? d.ip).join(", ")} umhängen
+                {t.devices.moveNamed(toMove.map(nameOf).join(", "))}
               </button>
-              <button onClick={() => setConfirmLocation(false)}>Abbrechen</button>
+              <button onClick={() => setConfirmLocation(false)}>{t.cancel}</button>
             </>
           ) : (
             <button disabled={!!busy || toMove.length === 0} onClick={() => setConfirmLocation(true)}>
-              Geräte umhängen
+              {t.devices.move}
             </button>
           )}
         </div>
@@ -551,26 +578,26 @@ export default function App() {
         <div className="pane grow">
           {devices.length === 0 ? (
             <div className="empty">
-              <p>Noch keine MusicCast-Geräte gefunden.</p>
-              <p className="dim">F5 sucht im Netzwerk. Feste Adressen lassen sich in den Einstellungen eintragen.</p>
+              <p>{t.devices.empty}</p>
+              <p className="dim">{t.devices.emptyHint}</p>
             </div>
           ) : (
             <table className="list">
               <thead>
                 <tr>
-                  <th className="narrow" title="Master der neuen Gruppe">
-                    Master
+                  <th className="narrow" title={t.devices.col.masterTitle}>
+                    {t.devices.col.master}
                   </th>
-                  <th className="narrow" title="Client der neuen Gruppe">
-                    Client
+                  <th className="narrow" title={t.devices.col.clientTitle}>
+                    {t.devices.col.client}
                   </th>
-                  <th>Name</th>
-                  <th>Verbindung</th>
-                  <th>Signal</th>
-                  <th>Link</th>
-                  <th>Standort</th>
-                  <th>Adresse</th>
-                  <th>Power</th>
+                  <th>{t.devices.col.name}</th>
+                  <th>{t.devices.col.connection}</th>
+                  <th>{t.devices.col.signal}</th>
+                  <th>{t.devices.col.link}</th>
+                  <th>{t.devices.col.location}</th>
+                  <th>{t.devices.col.address}</th>
+                  <th>{t.devices.col.power}</th>
                 </tr>
               </thead>
               <tbody>
@@ -589,7 +616,7 @@ export default function App() {
                         <input
                           type="radio"
                           name="master"
-                          aria-label={`${d.name ?? d.ip} als Master`}
+                          aria-label={t.devices.asMaster(nameOf(d))}
                           disabled={!d.online}
                           checked={master === d.ip}
                           onChange={() => setMaster(d.ip)}
@@ -598,7 +625,7 @@ export default function App() {
                       <td className="narrow">
                         <input
                           type="checkbox"
-                          aria-label={`${d.name ?? d.ip} als Client`}
+                          aria-label={t.devices.asClient(nameOf(d))}
                           disabled={!d.online || master === d.ip}
                           checked={clients.has(d.ip) && master !== d.ip}
                           onChange={(e) => {
@@ -609,31 +636,31 @@ export default function App() {
                           }}
                         />
                       </td>
-                      <td className="strong">{d.name ?? "Unbekannt"}</td>
+                      <td className="strong">{d.name ?? t.devices.unknown}</td>
                       {!d.online ? (
-                        <td colSpan={5} className="bad">
-                          Keine Antwort
+                        <td colSpan={4} className="bad">
+                          {t.devices.noAnswer}
                         </td>
                       ) : (
                         <>
-                          <td>{connectionLabel(d)}</td>
+                          <td>{connectionLabel(t, d)}</td>
                           <td>
                             {wl && (d.strength ?? 0) > 0 ? (
                               <span className="signal">
-                                <Meter value={d.strength as number} />
+                                <Meter value={d.strength as number} label={t.signalAria(d.strength as number)} />
                                 <span className="num">{d.strength}</span>
                               </span>
                             ) : (
-                              <span className="dim">{isWired(d) ? "kein Funk" : ""}</span>
+                              <span className="dim">{isWired(d) ? t.devices.noRadio : ""}</span>
                             )}
                           </td>
-                          <td className={d.role && d.role !== "none" ? "" : "dim"}>{roleLabel(d)}</td>
+                          <td className={d.role && d.role !== "none" ? "" : "dim"}>{roleLabel(t, d)}</td>
                           <td className={mixedLocations ? "warn" : ""}>{d.locationName ?? ""}</td>
                         </>
                       )}
                       <td className="num">{d.ip}</td>
                       <td className={d.power === "on" ? "" : "dim"}>
-                        {d.online ? (d.power === "on" ? "An" : "Standby") : ""}
+                        {d.online ? (d.power === "on" ? t.devices.on : t.devices.standby) : ""}
                       </td>
                     </tr>
                   );
@@ -645,45 +672,45 @@ export default function App() {
 
         <aside className="pane inspector">
           {!current ? (
-            <p className="dim pad">Ein Gerät in der Liste wählen, um Details und Aktionen zu sehen.</p>
+            <p className="dim pad">{t.inspector.hint}</p>
           ) : (
             <>
               <div className="inspector__head">
-                <div className="strong">{current.name ?? current.ip}</div>
-                <div className="dim">{current.model ?? (current.online ? "" : "Keine Antwort")}</div>
+                <div className="strong">{nameOf(current)}</div>
+                <div className="dim">{current.model ?? (current.online ? "" : t.devices.noAnswer)}</div>
               </div>
               <dl className="props selectable">
-                <dt>Adresse</dt>
+                <dt>{t.inspector.address}</dt>
                 <dd className="num">{current.ip}</dd>
-                <dt>Verbindung</dt>
-                <dd>{connectionLabel(current)}</dd>
+                <dt>{t.inspector.connection}</dt>
+                <dd>{connectionLabel(t, current)}</dd>
                 {isWireless(current) && (
                   <>
-                    <dt>WLAN</dt>
+                    <dt>{t.inspector.wifi}</dt>
                     <dd>{current.ssid ?? ""}</dd>
-                    <dt>Kanal</dt>
+                    <dt>{t.inspector.channel}</dt>
                     <dd className="num">{current.channel ?? ""}</dd>
                   </>
                 )}
                 {(current.strength ?? 0) > 0 && (
                   <>
-                    <dt>Signal</dt>
+                    <dt>{t.inspector.signal}</dt>
                     <dd className="num">{current.strength}</dd>
                   </>
                 )}
-                <dt>Firmware</dt>
+                <dt>{t.inspector.firmware}</dt>
                 <dd className="num">{current.firmware ?? ""}</dd>
-                <dt>Link</dt>
+                <dt>{t.inspector.link}</dt>
                 <dd>
-                  {roleLabel(current)}
+                  {roleLabel(t, current)}
                   {current.groupName ? `, ${current.groupName}` : ""}
                 </dd>
-                <dt>Standort</dt>
+                <dt>{t.inspector.location}</dt>
                 <dd>
                   {current.locationName ?? ""}
                   {current.locationId ? <span className="dim num"> {current.locationId.slice(0, 8)}</span> : null}
                 </dd>
-                <dt>Eingang</dt>
+                <dt>{t.inspector.input}</dt>
                 <dd>{current.input ?? ""}</dd>
               </dl>
               {current.online && (
@@ -691,28 +718,25 @@ export default function App() {
                   <button
                     disabled={!!busy}
                     onClick={async () => {
-                      const step = await run("Schalte ...", () => api.setPower(current.ip, current.power !== "on"));
-                      if (step) printSteps("Power", [step]);
+                      const step = await run(t.busy.power, () => api.setPower(current.ip, current.power !== "on"));
+                      if (step) printSteps(t.action.power, [step]);
                       window.setTimeout(refresh, 1200);
                     }}
                   >
-                    {current.power === "on" ? "In Standby schalten" : "Einschalten"}
+                    {current.power === "on" ? t.inspector.toStandby : t.inspector.powerOn}
                   </button>
                   {isWireless(current) &&
                     (confirmWired === current.ip ? (
                       <>
-                        <p className="note">
-                          Nur mit eingestecktem LAN-Kabel. Das Gerät verlässt {current.ip} und bezieht per Kabel eine
-                          neue Adresse. Schlägt das fehl, hilft nur ein Werksreset.
-                        </p>
+                        <p className="note">{t.inspector.wiredNote(current.ip)}</p>
                         <button disabled={!!busy} onClick={() => doWired(current.ip)}>
-                          Kabel steckt, umstellen
+                          {t.inspector.wiredConfirm}
                         </button>
-                        <button onClick={() => setConfirmWired(null)}>Abbrechen</button>
+                        <button onClick={() => setConfirmWired(null)}>{t.cancel}</button>
                       </>
                     ) : (
                       <button disabled={!!busy} onClick={() => setConfirmWired(current.ip)}>
-                        Auf Kabel umstellen
+                        {t.inspector.toWired}
                       </button>
                     ))}
                 </div>
@@ -724,15 +748,15 @@ export default function App() {
     </>
   );
 
-  // ---------------------------------------------------------------- Ansicht: WLAN
+  // ---------------------------------------------------------------- View: Wi-Fi
   const wlanView = (
     <>
       <div className="toolbar">
-        <h1>WLAN</h1>
+        <h1>{t.wlan.title}</h1>
         <label className="inline">
-          Adapter
+          {t.wlan.adapter}
           <select value={adapter} onChange={(e) => setAdapter(e.target.value)} style={{ maxWidth: 340 }}>
-            <option value="">Alle Adapter</option>
+            <option value="">{t.wlan.allAdapters}</option>
             {adapters.map((a) => (
               <option key={a.name} value={a.name}>
                 {a.name} ({a.description}, {a.status})
@@ -740,23 +764,24 @@ export default function App() {
             ))}
           </select>
         </label>
-        <button className="primary" disabled={!!busy} onClick={scan} title="Netze in Reichweite scannen (F6)">
-          WLAN scannen
+        <button className="primary" disabled={!!busy} onClick={scan} title={t.wlan.scanTitle}>
+          {t.wlan.scan}
         </button>
       </div>
       <div className="split">
         <div className="pane grow pad">
-          <h2>Belegung 2.4 GHz</h2>
+          <h2>{t.wlan.usage}</h2>
           <p className="dim">
             {nets === null
-              ? "Noch kein Scan. F6 scannt mit dem gewählten Adapter."
+              ? t.wlan.noScan
               : nets.length === 0
-                ? "Der Scan ist leer. Adapter aktiviert? Windows 11 verlangt dafür den Standortzugriff (Einstellungen, Datenschutz, Standort)."
-                : `${nets24.length} Netze. Störwert für Kanal 1, 6, 11: ${[1, 6, 11]
-                    .map((c) => channelScore(nets24, c, own?.ssid ?? null))
-                    .join(", ")}. Kleiner ist besser.`}
+                ? t.wlan.emptyScan
+                : t.wlan.summary(
+                    nets24.length,
+                    [1, 6, 11].map((c) => channelScore(nets24, c, own?.ssid ?? null)).join(", "),
+                  )}
           </p>
-          <div className="spectrum" aria-label="Belegung der Kanäle 1 bis 13">
+          <div className="spectrum" aria-label={t.wlan.spectrumAria}>
             {loads.map((sum, i) => {
               const lit = Math.round((sum / maxLoad) * 12);
               const isOwn = own?.channel === i + 1;
@@ -775,18 +800,18 @@ export default function App() {
             })}
           </div>
           <p className="legend">
-            <span className="legend__own">Dein Kanal</span>
-            <span className="legend__best">Empfohlen{best ? `: Kanal ${best.channel}` : ""}</span>
-            <span className="dim">Höhe: Summe der Signalstärken fremder Netze</span>
+            <span className="legend__own">{t.wlan.yourChannel}</span>
+            <span className="legend__best">{t.wlan.recommended(best ? best.channel : null)}</span>
+            <span className="dim">{t.wlan.heightLegend}</span>
           </p>
         </div>
         <div className="pane networks">
           <table className="list selectable">
             <thead>
               <tr>
-                <th className="narrow">Kanal</th>
-                <th>Signal</th>
-                <th>Netz</th>
+                <th className="narrow">{t.wlan.col.channel}</th>
+                <th>{t.wlan.col.signal}</th>
+                <th>{t.wlan.col.network}</th>
               </tr>
             </thead>
             <tbody>
@@ -797,11 +822,11 @@ export default function App() {
                     <td className="narrow num">{n.channel}</td>
                     <td>
                       <span className="signal">
-                        <Meter value={n.signal} />
+                        <Meter value={n.signal} label={t.signalAria(n.signal)} />
                         <span className="num">{n.signal}</span>
                       </span>
                     </td>
-                    <td className={own?.ssid && n.ssid === own.ssid ? "strong" : ""}>{n.ssid || "Verstecktes Netz"}</td>
+                    <td className={own?.ssid && n.ssid === own.ssid ? "strong" : ""}>{n.ssid || t.wlan.hidden}</td>
                   </tr>
                 ))}
             </tbody>
@@ -811,13 +836,13 @@ export default function App() {
     </>
   );
 
-  // ---------------------------------------------------------------- Ansicht: Monitoring
+  // ---------------------------------------------------------------- View: monitoring
   const monitorView = (
     <>
       <div className="toolbar">
-        <h1>Monitoring</h1>
+        <h1>{t.monitor.title}</h1>
         <label className="inline">
-          Intervall in Sekunden
+          {t.monitor.interval}
           <input
             type="number"
             min={5}
@@ -829,35 +854,32 @@ export default function App() {
           />
         </label>
         <button className="primary" disabled={!!busy} onClick={toggleMonitor} title="Ctrl+M">
-          {monitor?.on ? "Monitoring stoppen" : "Monitoring starten"}
+          {monitor?.on ? t.monitor.stop : t.monitor.start}
         </button>
         <span className="sep" />
         <button disabled={log.length === 0} onClick={() => setLog([])}>
-          Liste leeren
+          {t.monitor.clear}
         </button>
         <span className="toolbar__fill" />
-        <span className="dim selectable" title="Pfad in den Einstellungen ändern">
+        <span className="dim selectable" title={t.monitor.pathTitle}>
           {monitor?.logPath ?? ""}
         </span>
       </div>
       <div className="pane grow">
         {log.length === 0 ? (
           <div className="empty">
-            <p>Noch keine Einträge.</p>
-            <p className="dim">
-              Das Monitoring notiert jede Änderung: offline, Rollenwechsel, Kanalwechsel. Abbrüche meldet Windows als
-              Benachrichtigung. Solange es läuft, bleibt die App beim Schliessen im Infobereich aktiv.
-            </p>
+            <p>{t.monitor.empty}</p>
+            <p className="dim">{t.monitor.emptyHint}</p>
           </div>
         ) : (
           <table className="list selectable">
             <thead>
               <tr>
-                <th>Zeit</th>
-                <th>Gerät</th>
-                <th>Adresse</th>
-                <th>Status</th>
-                <th>Signal</th>
+                <th>{t.monitor.col.time}</th>
+                <th>{t.monitor.col.device}</th>
+                <th>{t.monitor.col.address}</th>
+                <th>{t.monitor.col.status}</th>
+                <th>{t.monitor.col.signal}</th>
               </tr>
             </thead>
             <tbody>
@@ -866,7 +888,7 @@ export default function App() {
                   <td className="num">{e.time}</td>
                   <td>{e.name}</td>
                   <td className="num">{e.ip}</td>
-                  <td className={e.status === "OFFLINE" ? "bad" : ""}>{e.status}</td>
+                  <td className={e.online === false ? "bad" : ""}>{e.status}</td>
                   <td className="num">{e.signal ?? ""}</td>
                 </tr>
               ))}
@@ -877,32 +899,44 @@ export default function App() {
     </>
   );
 
-  // ---------------------------------------------------------------- Ansicht: Einstellungen
+  // ---------------------------------------------------------------- View: settings
   const settingsView = (
     <>
       <div className="toolbar">
-        <h1>Einstellungen</h1>
+        <h1>{t.settings.title}</h1>
       </div>
       <div className="pane grow pad settings">
-        <h2>Darstellung</h2>
+        <h2>{t.settings.appearance}</h2>
         <div className="form">
           <span className="form__label" id="theme-label">
-            Farbschema
+            {t.settings.theme}
           </span>
           <div className="form__field">
             <div className="segmented" role="group" aria-labelledby="theme-label">
-              {THEMES.map((t) => (
-                <button key={t.id} aria-pressed={theme === t.id} onClick={() => setTheme(t.id)}>
-                  {t.label}
+              {THEMES.map((id) => (
+                <button key={id} aria-pressed={theme === id} onClick={() => setTheme(id)}>
+                  {t.settings.themes[id]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <span className="form__label" id="language-label">
+            {t.settings.language}
+          </span>
+          <div className="form__field">
+            <div className="segmented" role="group" aria-labelledby="language-label">
+              {LANGS.map((l) => (
+                <button key={l.id} aria-pressed={lang === l.id} lang={l.id} onClick={() => setLang(l.id)}>
+                  {l.label}
                 </button>
               ))}
             </div>
           </div>
         </div>
 
-        <h2>Geräteliste</h2>
+        <h2>{t.settings.deviceList}</h2>
         <div className="form">
-          <label htmlFor="ips">Feste Adressen</label>
+          <label htmlFor="ips">{t.settings.fixedAddresses}</label>
           <div className="form__field">
             <input
               id="ips"
@@ -918,15 +952,15 @@ export default function App() {
                 void discover(ipsText.split(/[,;\s]+/).filter(Boolean));
               }}
             >
-              Adressen verwenden
+              {t.settings.useAddresses}
             </button>
-            <p className="dim">Ersetzt die automatische Suche, bis du wieder mit F5 suchst.</p>
+            <p className="dim">{t.settings.fixedHint}</p>
           </div>
         </div>
 
-        <h2>Monitoring-Protokoll</h2>
+        <h2>{t.settings.monitorLog}</h2>
         <div className="form">
-          <label htmlFor="csv">CSV-Datei</label>
+          <label htmlFor="csv">{t.settings.csvFile}</label>
           <div className="form__field">
             <input
               id="csv"
@@ -942,27 +976,24 @@ export default function App() {
               disabled={!!busy || !logPathText.trim() || logPathText.trim() === monitor?.logPath}
               onClick={() => applyLogPath(logPathText)}
             >
-              Pfad übernehmen
+              {t.settings.applyPath}
             </button>
             <button disabled={!!busy || !monitor?.customLogPath} onClick={() => applyLogPath("")}>
-              Desktop verwenden
+              {t.settings.useDesktop}
             </button>
-            <p className="dim">
-              Absoluter Pfad zu einer Datei oder einem Ordner. Ohne Angabe liegt die Datei auf dem Desktop.
-            </p>
+            <p className="dim">{t.settings.csvHint}</p>
           </div>
         </div>
 
-        <h2>Router</h2>
-        <p className="measure">
-          Die App ändert am Router nichts. Diese Werte im Portal deines Routers setzen:
-        </p>
+        <h2>{t.settings.router}</h2>
+        <p className="measure">{t.settings.routerIntro}</p>
         <ul className="checklist">
           <li>
-            2.4-GHz-Kanal fest auf <b>{best ? best.channel : "(erst WLAN scannen)"}</b>, Bandbreite 20 MHz
+            {t.settings.channelBefore} <b>{best ? best.channel : t.settings.scanFirst}</b>
+            {t.settings.channelAfter}
           </li>
-          <li>Verschlüsselung WPA2</li>
-          <li>WLAN-Ruhezeiten aus</li>
+          <li>{t.settings.wpa2}</li>
+          <li>{t.settings.quietHours}</li>
           <li>
             <label>
               <input
@@ -973,32 +1004,34 @@ export default function App() {
                   save("mc-static", e.target.checked ? "1" : "0");
                 }}
               />
-              Statische IP pro MusicCast-Gerät ist eingerichtet
+              {t.settings.staticIp}
             </label>
           </li>
         </ul>
         <div className="form__field">
           <button
             onClick={async () => {
-              // Adresse beim Klick neu bestimmen, falls das Netzwerk gewechselt hat
+              // Determine the address on every click in case the network has changed
               const url = await api.routerUrl().catch((e) => {
-                notify(`Fehler: ${String(e)}`);
+                notify(t.error(String(e)));
                 return "";
               });
               if (!url) return;
               openUrl(url).catch((e) => notify(String(e)));
             }}
           >
-            Router-Portal öffnen
+            {t.settings.openPortal}
           </button>
         </div>
       </div>
     </>
   );
 
+  const updateLabel = updateText(t, update);
+
   return (
     <div className="app" onContextMenu={onContextMenu}>
-      <nav className="sidebar" aria-label="Bereiche">
+      <nav className="sidebar" aria-label={t.nav.aria}>
         {VIEWS.map((v) => (
           <button
             key={v.id}
@@ -1008,9 +1041,9 @@ export default function App() {
             onClick={() => setView(v.id)}
           >
             <Icon name={v.id} />
-            <span>{v.label}</span>
+            <span>{t.nav[v.id]}</span>
             {v.id === "devices" && devices.length > 0 && <span className="count num">{devices.length}</span>}
-            {v.id === "monitor" && monitor?.on && <span className="live" title="Monitoring läuft" />}
+            {v.id === "monitor" && monitor?.on && <span className="live" title={t.nav.monitoringRunning} />}
           </button>
         ))}
       </nav>
@@ -1035,7 +1068,8 @@ export default function App() {
                 setDockOpen(true);
               }}
             >
-              Hinweise{issues > 0 ? ` (${issues})` : ""}
+              {t.dock.hints}
+              {issues > 0 ? ` (${issues})` : ""}
             </button>
             <button
               role="tab"
@@ -1046,23 +1080,23 @@ export default function App() {
                 setDockOpen(true);
               }}
             >
-              Konsole
+              {t.dock.console}
             </button>
             <span className="toolbar__fill" />
             {dockOpen && dockTab === "console" && (
               <button disabled={consoleLines.length === 0} onClick={() => setConsoleLines([])}>
-                Leeren
+                {t.dock.clear}
               </button>
             )}
             <button onClick={() => setDockOpen((open) => !open)} title="Ctrl+J">
-              {dockOpen ? "Einklappen" : "Ausklappen"}
+              {dockOpen ? t.dock.collapse : t.dock.expand}
             </button>
           </div>
           {dockOpen && dockTab === "hints" && (
             <ul className="hints selectable">
               {recs.map((r, i) => (
                 <li key={i}>
-                  <span className={`hints__level ${r.level}`}>{LEVEL_LABEL[r.level]}</span>
+                  <span className={`hints__level ${r.level}`}>{t.level[r.level]}</span>
                   <span>{r.text}</span>
                 </li>
               ))}
@@ -1071,7 +1105,7 @@ export default function App() {
           {dockOpen && dockTab === "console" && (
             <div className="console selectable" ref={consoleRef}>
               {consoleLines.length === 0 ? (
-                <span className="dim">Hier erscheint jeder Befehl an die Geräte mit seinem Antwortcode.</span>
+                <span className="dim">{t.console.empty}</span>
               ) : (
                 consoleLines.map((l) => (
                   <div key={l.id} className={l.level === "info" ? "" : l.level}>
@@ -1086,16 +1120,14 @@ export default function App() {
 
       <footer className="statusbar">
         <span className={busy ? "statusbar__busy" : ""} role="status">
-          {busy || "Bereit"}
+          {busy || t.ready}
         </span>
         <span className="toolbar__fill" />
-        {updateText(update) && <span className={update?.phase === "error" ? "warn" : ""}>{updateText(update)}</span>}
-        <span>
-          {devices.length} {devices.length === 1 ? "Gerät" : "Geräte"}
-        </span>
-        <span>{linked > 0 ? `${linked} verlinkt` : "kein Link"}</span>
-        {mixedLocations && <span className="warn">{locations.length} Standorte</span>}
-        <span>{monitor?.on ? `Monitoring alle ${monitor.interval} s` : "Monitoring aus"}</span>
+        {updateLabel && <span className={update?.phase === "error" ? "warn" : ""}>{updateLabel}</span>}
+        <span>{t.statusbar.devices(devices.length)}</span>
+        <span>{linked > 0 ? t.statusbar.linked(linked) : t.statusbar.noLink}</span>
+        {mixedLocations && <span className="warn">{t.statusbar.locations(locations.length)}</span>}
+        <span>{monitor?.on ? t.statusbar.monitorOn(monitor.interval) : t.statusbar.monitorOff}</span>
       </footer>
 
       {toast && <div className="toast">{toast}</div>}

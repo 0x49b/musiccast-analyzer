@@ -1,5 +1,6 @@
-//! Hintergrund-Monitoring: protokolliert Statusaenderungen und meldet Abbrueche.
+//! Background monitoring: logs status changes and reports dropouts.
 
+use crate::i18n::{lang, pick, Lang};
 use crate::yxc;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -18,18 +19,20 @@ pub struct MonitorEntry {
     pub time: String,
     pub ip: String,
     pub name: String,
+    /// Status text in the language that was active when the entry was created
     pub status: String,
+    pub online: bool,
     pub signal: Option<i64>,
 }
 
 #[derive(Default)]
 pub struct MonitorShared {
     pub on: AtomicBool,
-    /// Wird bei jedem Start erhoeht, damit ein alter Thread sich sicher beendet
+    /// Incremented on every start so that an older thread reliably stops
     pub generation: AtomicU64,
     pub interval_secs: AtomicU64,
     pub log: Mutex<Vec<MonitorEntry>>,
-    /// Vom Benutzer gewaehlter Pfad; None bedeutet Standard (Desktop)
+    /// Path chosen by the user; None means the default (Desktop)
     pub custom_log_path: Mutex<Option<PathBuf>>,
 }
 
@@ -42,7 +45,7 @@ struct Snapshot {
 
 const LOG_FILE_NAME: &str = "musiccast-monitor.csv";
 
-/// Standard: Desktop des Benutzers. Faellt auf den App-Datenordner zurueck, wenn es keinen gibt.
+/// Default: the user's Desktop. Falls back to the app data folder when there is none.
 pub fn default_log_path(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(desktop) = app.path().desktop_dir() {
         if desktop.is_dir() {
@@ -59,16 +62,20 @@ pub fn log_path(app: &AppHandle, m: &MonitorShared) -> Option<PathBuf> {
     custom.or_else(|| default_log_path(app))
 }
 
-/// Prueft eine Benutzereingabe: absoluter Pfad, Ordner vorhanden, Datei beschreibbar.
-/// Ein Ordner wird um den Standard-Dateinamen ergaenzt, eine fehlende Endung um .csv.
+/// Validates user input: absolute path, existing folder, writable file.
+/// A folder gets the default file name appended, a missing extension becomes .csv.
 pub fn resolve_user_path(text: &str) -> Result<PathBuf, String> {
     let cleaned = text.trim().trim_matches('"').trim();
     if cleaned.is_empty() {
-        return Err("Pfad ist leer.".into());
+        return Err(pick("The path is empty.", "Pfad ist leer.").into());
     }
     let mut path = PathBuf::from(cleaned);
     if !path.is_absolute() {
-        return Err("Bitte einen absoluten Pfad angeben, z.B. C:\\Logs\\musiccast.csv".into());
+        return Err(pick(
+            "Enter an absolute path, e.g. C:\\Logs\\musiccast.csv",
+            "Bitte einen absoluten Pfad angeben, z.B. C:\\Logs\\musiccast.csv",
+        )
+        .into());
     }
     if path.is_dir() {
         path.push(LOG_FILE_NAME);
@@ -78,28 +85,32 @@ pub fn resolve_user_path(text: &str) -> Result<PathBuf, String> {
     match path.parent() {
         Some(dir) if dir.is_dir() => {}
         _ => {
-            return Err(format!(
-                "Der Ordner von {} existiert nicht.",
-                path.display()
-            ))
+            return Err(match lang() {
+                Lang::En => format!("The folder of {} does not exist.", path.display()),
+                Lang::De => format!("Der Ordner von {} existiert nicht.", path.display()),
+            })
         }
     }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|e| format!("{} ist nicht beschreibbar: {e}", path.display()))?;
+        .map_err(|e| match lang() {
+            Lang::En => format!("{} is not writable: {e}", path.display()),
+            Lang::De => format!("{} ist nicht beschreibbar: {e}", path.display()),
+        })?;
     Ok(path)
 }
 
-fn append_csv(path: &Path, e: &MonitorEntry) {
-    // Kopfzeile auch dann schreiben, wenn die Datei schon leer angelegt wurde
+/// The CSV is data for other tools and therefore always written in English.
+fn append_csv(path: &Path, e: &MonitorEntry, status: &str) {
+    // Write the header even if the file already exists but is still empty
     let is_new = std::fs::metadata(path)
         .map(|m| m.len() == 0)
         .unwrap_or(true);
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         if is_new {
-            let _ = writeln!(f, "Zeit;IP;Name;Status;Signal");
+            let _ = writeln!(f, "Time;IP;Name;Status;Signal");
         }
         let signal = e.signal.map(|s| s.to_string()).unwrap_or_default();
         let _ = writeln!(
@@ -108,7 +119,7 @@ fn append_csv(path: &Path, e: &MonitorEntry) {
             e.time,
             e.ip,
             e.name.replace(';', ","),
-            e.status,
+            status,
             signal
         );
     }
@@ -139,11 +150,13 @@ pub fn run(app: AppHandle, m: Arc<MonitorShared>, known: Arc<Mutex<Vec<String>>>
             {
                 names.insert(ip.clone(), n.to_owned());
             }
-            let wired = net
+            let connection = net
                 .as_ref()
                 .and_then(|n| n.get("connection"))
                 .and_then(|v| v.as_str())
-                .is_some_and(|c| c.contains("wired"));
+                .unwrap_or("");
+            let wired = connection.contains("wired");
+            let extended = connection.contains("extend");
             let snap = Snapshot {
                 online: dist.is_some(),
                 role: dist
@@ -164,26 +177,33 @@ pub fn run(app: AppHandle, m: Arc<MonitorShared>, known: Arc<Mutex<Vec<String>>>
             }
 
             let name = names.get(&ip).cloned().unwrap_or_default();
-            let status = if !snap.online {
-                "OFFLINE".to_owned()
-            } else {
-                let conn = match (wired, snap.channel) {
-                    (true, _) => "LAN".to_owned(),
-                    (false, Some(ch)) => format!("WLAN Kanal {ch}"),
-                    (false, None) => "WLAN".to_owned(),
+            let describe = |language: Lang| -> String {
+                if !snap.online {
+                    return "OFFLINE".to_owned();
+                }
+                let de = language == Lang::De;
+                let conn = match (wired, extended, snap.channel) {
+                    (true, _, _) => (if de { "Kabel" } else { "wired" }).to_owned(),
+                    (_, true, _) => (if de { "erweitert" } else { "extended" }).to_owned(),
+                    (_, _, Some(ch)) if de => format!("WLAN Kanal {ch}"),
+                    (_, _, Some(ch)) => format!("Wi-Fi channel {ch}"),
+                    (_, _, None) => (if de { "WLAN" } else { "Wi-Fi" }).to_owned(),
                 };
-                let role = match snap.role.as_str() {
-                    "server" => "Master",
-                    "client" => "Client",
-                    _ => "kein Link",
+                let role = match (snap.role.as_str(), de) {
+                    ("server", _) => "master",
+                    ("client", _) => "client",
+                    (_, true) => "kein Link",
+                    (_, false) => "no link",
                 };
                 format!("online | {role} | {conn}")
             };
+            let status = describe(lang());
             let entry = MonitorEntry {
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 ip: ip.clone(),
                 name: name.clone(),
                 status,
+                online: snap.online,
                 signal: net
                     .as_ref()
                     .filter(|_| !wired)
@@ -191,17 +211,23 @@ pub fn run(app: AppHandle, m: Arc<MonitorShared>, known: Arc<Mutex<Vec<String>>>
                     .and_then(|v| v.as_i64()),
             };
 
-            // Nur echte Verschlechterungen melden, nicht den ersten Messwert
+            // Report real deteriorations only, never the first reading
             if let Some(p) = prev {
                 let label = if name.is_empty() { ip.clone() } else { name };
                 let problem = if p.online && !snap.online {
-                    Some(format!("{label} ist offline."))
+                    Some(match lang() {
+                        Lang::En => format!("{label} is offline."),
+                        Lang::De => format!("{label} ist offline."),
+                    })
                 } else if snap.online
                     && p.role != "none"
                     && !p.role.is_empty()
                     && snap.role == "none"
                 {
-                    Some(format!("{label} ist aus der Link-Gruppe gefallen."))
+                    Some(match lang() {
+                        Lang::En => format!("{label} dropped out of the link group."),
+                        Lang::De => format!("{label} ist aus der Link-Gruppe gefallen."),
+                    })
                 } else {
                     None
                 };
@@ -215,9 +241,9 @@ pub fn run(app: AppHandle, m: Arc<MonitorShared>, known: Arc<Mutex<Vec<String>>>
                 }
             }
 
-            // Pfad pro Eintrag aufloesen, damit eine Aenderung sofort greift
+            // Resolve the path per entry so that a change takes effect immediately
             if let Some(p) = log_path(&app, &m) {
-                append_csv(&p, &entry);
+                append_csv(&p, &entry, &describe(Lang::En));
             }
             if let Ok(mut log) = m.log.lock() {
                 log.push(entry.clone());
@@ -229,7 +255,7 @@ pub fn run(app: AppHandle, m: Arc<MonitorShared>, known: Arc<Mutex<Vec<String>>>
             last.insert(ip, snap);
         }
 
-        // In kleinen Schritten schlafen, damit Stoppen sofort greift
+        // Sleep in small steps so that stopping takes effect immediately
         let ticks = m.interval_secs.load(Ordering::Relaxed).clamp(5, 600) * 4;
         for _ in 0..ticks {
             if !active(&m, generation) {

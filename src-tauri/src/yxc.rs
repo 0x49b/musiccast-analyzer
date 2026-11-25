@@ -1,5 +1,6 @@
-//! Yamaha Extended Control (YXC): lokale HTTP-API der MusicCast-Geraete.
+//! Yamaha Extended Control (YXC): the local HTTP API of MusicCast devices.
 
+use crate::i18n::{lang, pick, Lang};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
@@ -64,7 +65,7 @@ pub struct Device {
     pub clients: Vec<String>,
     pub power: Option<String>,
     pub input: Option<String>,
-    /// MusicCast-Standort: nur Geraete mit gleicher ID erscheinen in der Yamaha-App zusammen
+    /// MusicCast location: only devices sharing an ID show up together in the Yamaha app
     pub location_id: Option<String>,
     pub location_name: Option<String>,
 }
@@ -102,7 +103,7 @@ pub fn device_status(ip: &str) -> Device {
         online: true,
         name: s(net, "/network_name"),
         model: s(Some(&info), "/model_name"),
-        // system_version kommt als Zahl (z.B. 2.16)
+        // system_version arrives as a number (e.g. 2.16)
         firmware: info.get("system_version").map(|v| match v {
             Value::String(t) => t.clone(),
             other => other.to_string(),
@@ -144,11 +145,11 @@ fn role_of(ip: &str) -> Option<String> {
     s(get(ip, "dist/getDistributionInfo").as_ref(), "/role")
 }
 
-/// Baut eine Link-Gruppe: Clients anmelden, Master konfigurieren, Verteilung starten.
+/// Builds a link group: register the clients, configure the master, start distribution.
 pub fn link(master: &str, clients: &[String], name: Option<&str>) -> Vec<Step> {
     let mut steps = Vec::new();
 
-    // Bestehende Gruppe des Masters weiterverwenden, sonst neue ID (32 Hex-Zeichen)
+    // Reuse the master's existing group, otherwise create a new ID (32 hex characters)
     let dist = get(master, "dist/getDistributionInfo");
     let existing = s(dist.as_ref(), "/group_id").filter(|g| {
         s(dist.as_ref(), "/role").as_deref() == Some("server")
@@ -159,12 +160,12 @@ pub fn link(master: &str, clients: &[String], name: Option<&str>) -> Vec<Step> {
         existing.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string().to_uppercase());
 
     steps.push(step(
-        format!("{master} Power on"),
+        format!("{master} {}", pick("power on", "einschalten")),
         get(master, "main/setPower?power=on"),
     ));
     for c in clients {
         steps.push(step(
-            format!("{c} Power on"),
+            format!("{c} {}", pick("power on", "einschalten")),
             get(c, "main/setPower?power=on"),
         ));
         steps.push(step(
@@ -204,7 +205,7 @@ pub fn link(master: &str, clients: &[String], name: Option<&str>) -> Vec<Step> {
     steps
 }
 
-/// Loest alle Gruppen unter den bekannten Geraeten auf.
+/// Dissolves every group among the known devices.
 pub fn unlink(known: &[String]) -> Vec<Step> {
     let mut steps = Vec::new();
     let roles: Vec<(String, Option<String>)> =
@@ -213,7 +214,7 @@ pub fn unlink(known: &[String]) -> Vec<Step> {
     for (ip, role) in &roles {
         if role.as_deref() == Some("client") {
             steps.push(step(
-                format!("{ip} setClientInfo (leer)"),
+                format!("{ip} setClientInfo {}", pick("(clear)", "(leer)")),
                 post(
                     ip,
                     "dist/setClientInfo",
@@ -229,7 +230,7 @@ pub fn unlink(known: &[String]) -> Vec<Step> {
                 get(ip, "dist/stopDistribution"),
             ));
             steps.push(step(
-                format!("{ip} setServerInfo (leer)"),
+                format!("{ip} setServerInfo {}", pick("(clear)", "(leer)")),
                 post(ip, "dist/setServerInfo", &json!({ "group_id": "" })),
             ));
         }
@@ -254,14 +255,20 @@ pub fn find_server(known: &[String]) -> Option<String> {
 
 pub fn set_power(ip: &str, on: bool) -> Step {
     let p = if on { "on" } else { "standby" };
+    let label = match (on, lang()) {
+        (true, Lang::En) => "power on",
+        (false, Lang::En) => "standby",
+        (true, Lang::De) => "einschalten",
+        (false, Lang::De) => "in Standby",
+    };
     step(
-        format!("{ip} Power {p}"),
+        format!("{ip} {label}"),
         get(ip, &format!("main/setPower?power={p}")),
     )
 }
 
-/// Stellt die Netzwerkverbindung des Geraets auf Kabel um (DHCP).
-/// Danach ist es unter der bisherigen WLAN-IP nicht mehr erreichbar.
+/// Switches the device's network connection to wired (DHCP).
+/// Afterwards it is no longer reachable at its previous Wi-Fi address.
 pub fn switch_to_wired(ip: &str) -> Step {
     step(
         format!("{ip} setWiredLan"),
@@ -284,14 +291,14 @@ pub fn is_location_id(id: &str) -> bool {
     id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Haengt ein Geraet in einen bestehenden MusicCast-Standort um.
+/// Moves a device into an existing MusicCast location.
 ///
-/// `setLocationId` und `setLocationName` sind nicht oeffentlich dokumentiert; die Yamaha-App
-/// nutzt sie bei der Einrichtung. Beobachtet an einem WX-010: GET mit `?id=` liefert Code 4
-/// (Parameter ungueltig), POST mit `{"id": ...}` wird als Anfrage akzeptiert, kann aber mit
-/// Code 5 (im aktuellen Zustand gesperrt) abgelehnt werden. Der Name wird nur gesetzt, wenn
-/// die ID uebernommen wurde, damit nicht zwei Standorte gleich heissen. Der letzte Schritt
-/// liest den Standort zurueck und ist der eigentliche Erfolgsnachweis.
+/// `setLocationId` and `setLocationName` are not publicly documented; the Yamaha app uses them
+/// during setup. Observed on a WX-010: GET with `?id=` returns code 4 (invalid parameter), POST
+/// with `{"id": ...}` is accepted as a request but can be refused with code 5 (guarded in the
+/// current state). The name is only set once the ID has been accepted, so that two locations
+/// never end up with the same name. The last step reads the location back and is the actual
+/// proof of success.
 pub fn set_location(ip: &str, id: &str, name: &str) -> Vec<Step> {
     let mut steps = Vec::new();
 
@@ -336,14 +343,19 @@ pub fn set_location(ip: &str, id: &str, name: &str) -> Vec<Step> {
     let hint = if moved {
         ""
     } else if guarded {
-        ", NICHT umgestellt. Das Geraet sperrt die Aenderung (Code 5), obwohl es in keiner \
-         Link-Gruppe sein sollte: am Geraet CONNECT 5 Sekunden halten und gleich danach erneut \
-         versuchen"
+        pick(
+            ", NOT changed. The device guards this setting (code 5) although it should not be \
+             in a link group: hold CONNECT on the device for 5 seconds and retry right away",
+            ", NICHT umgestellt. Das Ger\u{e4}t sperrt die \u{c4}nderung (Code 5), obwohl es in \
+             keiner Link-Gruppe sein sollte: am Ger\u{e4}t CONNECT 5 Sekunden halten und gleich \
+             danach erneut versuchen",
+        )
     } else {
-        ", NICHT umgestellt"
+        pick(", NOT changed", ", NICHT umgestellt")
     };
+    let check = pick("check: location is now", "Kontrolle: Standort ist jetzt");
     steps.push(Step {
-        step: format!("{ip} Kontrolle: Standort ist jetzt '{now_name}' ({now_id}){hint}"),
+        step: format!("{ip} {check} '{now_name}' ({now_id}){hint}"),
         code: response_code(&now),
         ok: moved,
     });

@@ -1,13 +1,13 @@
 [package]
 name = "musiccast-analyzer"
 version = "0.1.0"
-description = "Diagnose, Link und Monitoring fuer Yamaha MusicCast im Heimnetz"
+description = "Diagnostics, linking and monitoring for Yamaha MusicCast on the home network"
 edition = "2021"
 
 [lib]
 name = "musiccast_analyzer_lib"
-# Nur rlib: staticlib/cdylib braucht es nur fuer Mobile-Builds. Als DLL sprengt die Lib mit der
-# GNU-Toolchain das Export-Limit des Linkers ("export ordinal too large").
+# rlib only: staticlib/cdylib are needed for mobile builds only. Built as a DLL with the GNU
+# toolchain, the library exceeds the linker's export limit ("export ordinal too large").
 crate-type = ["rlib"]
 
 [build-dependencies]
@@ -20,7 +20,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# ureq 2.x: blockierender HTTP-Client, ohne TLS (die Geraete sprechen nur HTTP)
+# ureq 2.x: blocking HTTP client, without TLS (the devices speak plain HTTP only)
 ureq = { version = "2", default-features = false, features = ["json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
