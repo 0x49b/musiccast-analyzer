@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Adapter, Device, MonitorStatus, Net, Step } from "./types";
+import type { Adapter, Device, MonitorStatus, Net, Step, UpdateStatus } from "./types";
 
 // Parameternamen muessen zu den Rust-Commands in src-tauri/src/lib.rs passen
 export const api = {
@@ -15,6 +15,7 @@ export const api = {
   switchToWired: (ip: string) => invoke<Step>("switch_to_wired", { ip }),
   setLocation: (ips: string[], id: string, name: string) =>
     invoke<Step[]>("set_location", { ips, id, name }),
+  updateStatus: () => invoke<UpdateStatus | null>("update_status"),
   /** Adresse x.x.x.1 im Netz, mit dem dieser PC verbunden ist. */
   routerUrl: () => invoke<string>("router_url"),
   monitorStatus: () => invoke<MonitorStatus>("monitor_status"),

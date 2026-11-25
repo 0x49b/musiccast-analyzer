@@ -30,6 +30,24 @@ Mit installiertem `tauri-cli` (`cargo install tauri-cli --version "^2"`) geht au
 - "Auf LAN umstellen": schaltet ein Geraet per `system/setWiredLan` von WLAN auf Kabel um
 - Monitoring im Hintergrund mit Tray-Icon, CSV-Log und Windows-Benachrichtigung bei Abbruch
 
+## Automatisches Update
+
+Die installierte App prueft beim Start den neuesten GitHub-Release (`latest.json`), laedt ein neueres
+Update, installiert es und startet neu. Im Dev-Modus (`npm run tauri dev`) findet keine Pruefung statt.
+
+Updates muessen signiert sein. Einmalig einrichten:
+
+```powershell
+npm run tauri signer generate -- -w "$HOME\.tauri\musiccast-analyzer.key"
+```
+
+- Den ausgegebenen oeffentlichen Schluessel in `src-tauri/tauri.conf.json` bei `plugins.updater.pubkey` eintragen.
+- Im GitHub-Repo unter Settings, Secrets and variables, Actions zwei Secrets anlegen:
+  `TAURI_SIGNING_PRIVATE_KEY` (Inhalt der `.key`-Datei) und `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+- Den privaten Schluessel sicher aufbewahren. Geht er verloren, koennen installierte Apps keine Updates mehr annehmen.
+
+Fuer einen lokalen `npm run tauri build` muessen dieselben beiden Werte als Umgebungsvariablen gesetzt sein.
+
 ## Aufbau
 
 | Pfad | Inhalt |

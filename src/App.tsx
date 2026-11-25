@@ -18,7 +18,7 @@ import {
   ownNetwork,
   recommendations,
 } from "./logic";
-import type { Adapter, Device, MonitorEntry, MonitorStatus, Net, RecLevel, Step } from "./types";
+import type { Adapter, Device, MonitorEntry, MonitorStatus, Net, RecLevel, Step, UpdateStatus } from "./types";
 
 type Theme = "system" | "light" | "dark";
 const THEMES: { id: Theme; label: string }[] = [
@@ -114,6 +114,23 @@ function Meter({ value, max = 100 }: { value: number; max?: number }) {
   );
 }
 
+/** Kurztext fuer die Statusleiste; leer, wenn es nichts zu melden gibt. */
+function updateText(u: UpdateStatus | null): string {
+  if (!u) return "";
+  switch (u.phase) {
+    case "checking":
+      return "Suche nach Updates ...";
+    case "downloading":
+      return `Lade Update ${u.version ?? ""}${u.percent != null ? `, ${u.percent} %` : ""}`;
+    case "installing":
+      return `Installiere Update ${u.version ?? ""}, die App startet neu`;
+    case "error":
+      return "Update-Prüfung fehlgeschlagen";
+    default:
+      return "";
+  }
+}
+
 function connectionLabel(d: Device): string {
   if (isWired(d)) return "Kabel";
   if (isExtended(d)) return "Erweitert";
@@ -170,6 +187,7 @@ export default function App() {
   const [interval, setIntervalSecs] = useState(10);
   const [logPathText, setLogPathText] = useState("");
   const [consoleLines, setConsoleLines] = useState<ConsoleLine[]>([]);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
 
   /** Haengt Zeilen an die Konsole an (maximal 500 bleiben erhalten). */
   const print = useCallback((level: ConsoleLine["level"], ...texts: string[]) => {
@@ -404,9 +422,26 @@ export default function App() {
     const offMenu = listen<string>("menu", (event) => {
       commands.current[event.payload]?.();
     });
+
+    // Update-Stand: einmal abholen (die Pruefung startet vor dem Laden der Oberflaeche), dann mithoeren
+    const onUpdate = (u: UpdateStatus | null) => {
+      if (!u) return;
+      setUpdate(u);
+      if (u.phase === "downloading" && u.percent === 0) print("info", `Update ${u.version ?? ""} gefunden, lade herunter`);
+      if (u.phase === "installing") print("info", `Update ${u.version ?? ""} wird installiert, die App startet neu`);
+      if (u.phase === "current") print("info", "Die App ist aktuell.");
+      if (u.phase === "error") print("bad", `Update-Prüfung fehlgeschlagen: ${u.message ?? "unbekannter Fehler"}`);
+    };
+    api
+      .updateStatus()
+      .then(onUpdate)
+      .catch(() => undefined);
+    const offUpdate = listen<UpdateStatus>("update-status", (event) => onUpdate(event.payload));
+
     return () => {
       offEntry.then((off) => off());
       offMenu.then((off) => off());
+      offUpdate.then((off) => off());
     };
     // Nur einmal beim Start
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1054,6 +1089,7 @@ export default function App() {
           {busy || "Bereit"}
         </span>
         <span className="toolbar__fill" />
+        {updateText(update) && <span className={update?.phase === "error" ? "warn" : ""}>{updateText(update)}</span>}
         <span>
           {devices.length} {devices.length === 1 ? "Gerät" : "Geräte"}
         </span>

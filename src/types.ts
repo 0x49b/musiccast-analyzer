@@ -56,6 +56,13 @@ export interface MonitorStatus {
   log: MonitorEntry[];
 }
 
+export interface UpdateStatus {
+  phase: "checking" | "current" | "downloading" | "installing" | "error";
+  version: string | null;
+  percent: number | null;
+  message: string | null;
+}
+
 export type RecLevel = "bad" | "warn" | "info" | "ok";
 
 export interface Recommendation {

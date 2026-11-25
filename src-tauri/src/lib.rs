@@ -16,6 +16,87 @@ use yxc::{Device, Step};
 pub struct AppState {
     known: Arc<Mutex<Vec<String>>>,
     monitor: Arc<MonitorShared>,
+    /// Letzter Stand der Update-Pruefung, damit die Oberflaeche ihn auch nach dem Laden noch bekommt
+    update: Mutex<Option<UpdateStatus>>,
+}
+
+/// Stand des automatischen Updates. `phase`: checking, current, downloading, installing, error.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    phase: String,
+    version: Option<String>,
+    percent: Option<u8>,
+    message: Option<String>,
+}
+
+fn report_update(
+    app: &AppHandle,
+    phase: &str,
+    version: Option<&str>,
+    percent: Option<u8>,
+    message: Option<String>,
+) {
+    let status = UpdateStatus {
+        phase: phase.to_owned(),
+        version: version.map(str::to_owned),
+        percent,
+        message,
+    };
+    if let Ok(mut slot) = app.state::<AppState>().update.lock() {
+        *slot = Some(status.clone());
+    }
+    let _ = app.emit("update-status", status);
+}
+
+/// Prueft den neuesten GitHub-Release, laedt ein neueres Update, installiert es und startet neu.
+/// Die Signatur des Downloads prueft das Updater-Plugin gegen den Schluessel in tauri.conf.json.
+async fn update_on_start(app: AppHandle) -> tauri_plugin_updater::Result<()> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    report_update(&app, "checking", None, None, None);
+    let Some(update) = app.updater()?.check().await? else {
+        report_update(&app, "current", None, None, None);
+        return Ok(());
+    };
+    let version = update.version.clone();
+    report_update(&app, "downloading", Some(&version), Some(0), None);
+
+    let progress_app = app.clone();
+    let progress_version = version.clone();
+    let mut received: u64 = 0;
+    let mut last_percent: u8 = 0;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                received += chunk as u64;
+                if let Some(total) = total.filter(|t| *t > 0) {
+                    let percent = (received.saturating_mul(100) / total).min(100) as u8;
+                    if percent != last_percent {
+                        last_percent = percent;
+                        report_update(
+                            &progress_app,
+                            "downloading",
+                            Some(&progress_version),
+                            Some(percent),
+                            None,
+                        );
+                    }
+                }
+            },
+            || {},
+        )
+        .await?;
+
+    // Unter Windows beendet der Installer die App selbst und startet sie danach neu;
+    // auf anderen Plattformen uebernimmt das der folgende Neustart.
+    report_update(&app, "installing", Some(&version), None, None);
+    app.restart();
+}
+
+#[tauri::command(async)]
+fn update_status(state: State<'_, AppState>) -> Result<Option<UpdateStatus>, String> {
+    Ok(state.update.lock().map(|s| s.clone()).unwrap_or(None))
 }
 
 impl AppState {
@@ -298,9 +379,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             known: Arc::new(Mutex::new(Vec::new())),
             monitor,
+            update: Mutex::new(None),
         })
         .menu(build_app_menu)
         .on_menu_event(|app, event| {
@@ -331,6 +414,16 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+
+            // Update-Pruefung nur im Release-Build: im Dev-Modus gibt es nichts zu ersetzen
+            if !cfg!(debug_assertions) {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = update_on_start(handle.clone()).await {
+                        report_update(&handle, "error", None, None, Some(e.to_string()));
+                    }
+                });
+            }
             Ok(())
         })
         // Solange das Monitoring laeuft, schliesst das X nur das Fenster: die App bleibt im Tray
@@ -358,7 +451,8 @@ pub fn run() {
             monitor_stop,
             monitor_set_log_path,
             set_location,
-            router_url
+            router_url,
+            update_status
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Tauri-Anwendung");

@@ -26,7 +26,26 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png", "icons/icon.ico"]
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY3Q0U4RkQzNDU1OUI5MTMKUldRVHVWbEYwNC9POTNBNUxOTEF1R1FFK2JrYzluNnlWK1hnNWFNTHRQQk9XUXpOWTNPYUlZRTYK",
+      "endpoints": [
+        "https://github.com/0x49b/musiccast-analyzer/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
