@@ -1,12 +1,19 @@
 name: Release (Windows)
 
 # Baut die App fuer Windows und legt einen GitHub-Release mit Installer und portabler EXE an.
-# Ausloeser: ein Tag wie v0.1.0 pushen, oder manuell ueber "Run workflow".
+# Ausloeser: ein Tag wie v0.2.0 pushen, oder manuell ueber "Run workflow".
+# Die Version kommt aus dem Tag und wird vor dem Build in tauri.conf.json, Cargo.toml,
+# Cargo.lock, package.json und package-lock.json geschrieben.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version ohne v, z.B. 0.2.0. Leer: Wert aus tauri.conf.json"
+        required: false
+        type: string
 
 permissions:
   contents: write # Release anlegen und Dateien hochladen
@@ -22,24 +29,53 @@ jobs:
       - name: Repository auschecken
         uses: actions/checkout@v4
 
-      - name: Version und Tag bestimmen
-        id: meta
-        shell: pwsh
-        run: |
-          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          # Bei einem Tag-Push gilt der Tag, beim manuellen Start die Version aus tauri.conf.json
-          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$version" }
-          if ($tag -ne "v$version") {
-            Write-Error "Tag '$tag' passt nicht zur Version '$version' in src-tauri/tauri.conf.json. Version anpassen oder Tag v$version verwenden."
-            exit 1
-          }
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-
       - name: Node.js einrichten
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
+
+      - name: Version bestimmen und in die Projektdateien schreiben
+        id: meta
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $conf = "src-tauri/tauri.conf.json"
+          # Quelle der Version: der gepushte Tag, sonst die Eingabe beim manuellen Start,
+          # sonst der Wert aus tauri.conf.json
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          } elseif ($env:INPUT_VERSION) {
+            $version = $env:INPUT_VERSION.Trim() -replace '^v', ''
+          } else {
+            $version = (Get-Content $conf -Raw | ConvertFrom-Json).version
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            Write-Error "'$version' ist keine gueltige Version. Erwartet wird z.B. 0.2.0 (Tag v0.2.0)."
+            exit 1
+          }
+
+          # Ersetzt den ersten Treffer und bricht ab, wenn das Muster fehlt
+          function Set-First([string]$Path, [string]$Pattern, [string]$Replacement) {
+            $text = [IO.File]::ReadAllText($Path)
+            $regex = [regex]::new($Pattern, 'Multiline')
+            if (-not $regex.IsMatch($text)) { Write-Error "Versionsfeld in $Path nicht gefunden."; exit 1 }
+            [IO.File]::WriteAllText($Path, $regex.Replace($text, $Replacement, 1))
+          }
+
+          # Die Aenderungen gelten nur fuer diesen Build und werden nicht ins Repo zurueckgeschrieben
+          Set-First $conf '"version"\s*:\s*"[^"]*"' ('"version": "' + $version + '"')
+          Set-First "src-tauri/Cargo.toml" '^version\s*=\s*"[^"]*"' ('version = "' + $version + '"')
+          if (Test-Path "src-tauri/Cargo.lock") {
+            Set-First "src-tauri/Cargo.lock" '(name = "musiccast-analyzer"\r?\nversion = ")[^"]*' ('${1}' + $version)
+          }
+          # package.json und package-lock.json gemeinsam, damit npm ci sie als konsistent ansieht
+          npm version $version --no-git-tag-version --allow-same-version | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm version ist fehlgeschlagen."; exit 1 }
+
+          Write-Host "Baue Version $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
 
       - name: Rust einrichten (MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -58,14 +94,19 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signiert die Update-Dateien. Ohne diese Secrets bricht der Build ab,
+          # weil tauri.conf.json Updater-Artefakte verlangt.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ steps.meta.outputs.tag }}
           releaseName: MusicCast Analyzer ${{ steps.meta.outputs.tag }}
           releaseBody: |
             Windows-Build (x64).
 
-            - `*-setup.exe`: Installer
+            - `*-setup.exe`: Installer. Die installierte App aktualisiert sich beim Start selbst.
             - `*_portable.exe`: einzelne Datei ohne Installation, braucht die WebView2-Runtime (bei Windows 10/11 in der Regel vorhanden)
+            - `latest.json` und `*.sig`: Daten fuer das automatische Update
 
             Die Dateien sind nicht signiert. Windows SmartScreen zeigt deshalb beim ersten Start eine Warnung.
           releaseDraft: false
