@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Repository auschecken
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Version und Tag bestimmen
         id: meta
