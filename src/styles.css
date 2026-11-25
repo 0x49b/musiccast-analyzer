@@ -1,0 +1,289 @@
+/*
+ * Desktop-Oberflaeche: festes Fensterlayout mit Seitenleiste, Werkzeugleiste, Listen, Inspektor,
+ * andockbarem unteren Bereich und Statusleiste. Nichts scrollt als Seite, nur die einzelnen Bereiche.
+ *
+ * Farbe: kuehle Aluminium-Grautoene wie an einem HiFi-Geraet, ein Akzent in Petrol.
+ * Das eine auffaellige Element sind die segmentierten Pegelanzeigen (Signal, Kanalbelegung).
+ */
+:root {
+  --win: #eef0f2;        /* Fensterflaeche, Werkzeugleisten */
+  --side: #e4e7ea;       /* Seitenleiste, Statusleiste */
+  --pane: #fbfbfc;       /* Inhaltsbereiche */
+  --ink: #171a1d;
+  --ink-2: #5a6068;      /* Beschriftungen, Nebeninfos */
+  --line: #d3d7dc;
+  --line-soft: #e4e7ea;
+  --accent: #0c6b78;     /* Petrol */
+  --on-accent: #ffffff;
+  --select: #cfe5e8;     /* ausgewaehlte Zeile */
+  --hover: rgba(23, 26, 29, 0.055);
+  --press: rgba(23, 26, 29, 0.11);
+  --seg-off: #d9dde1;    /* unbeleuchtetes Pegelsegment */
+  --ok: #1a7a49;
+  --warn: #946000;
+  --bad: #bd3324;
+
+  --row: 30px;
+  --ctl: 28px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  color-scheme: light dark;
+}
+
+/* Dunkel: fest gewaehlt ueber data-theme, sonst nach System (ausser "light" ist erzwungen) */
+:root[data-theme="dark"] {
+  --win: #25282c;
+  --side: #1c1e21;
+  --pane: #202326;
+  --ink: #e7e9eb;
+  --ink-2: #9ca3ab;
+  --line: #383c42;
+  --line-soft: #2d3136;
+  --accent: #55c3cf;
+  --on-accent: #06282c;
+  --select: #1f4a50;
+  --hover: rgba(231, 233, 235, 0.07);
+  --press: rgba(231, 233, 235, 0.13);
+  --seg-off: #3a3f45;
+  --ok: #5fc593;
+  --warn: #e0af4f;
+  --bad: #ff8b7b;
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --win: #25282c;
+    --side: #1c1e21;
+    --pane: #202326;
+    --ink: #e7e9eb;
+    --ink-2: #9ca3ab;
+    --line: #383c42;
+    --line-soft: #2d3136;
+    --accent: #55c3cf;
+    --on-accent: #06282c;
+    --select: #1f4a50;
+    --hover: rgba(231, 233, 235, 0.07);
+    --press: rgba(231, 233, 235, 0.13);
+    --seg-off: #3a3f45;
+    --ok: #5fc593;
+    --warn: #e0af4f;
+    --bad: #ff8b7b;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font: 400 13px/1.4 var(--font);
+  color: var(--ink);
+  background: var(--win);
+  overflow: hidden;                 /* das Fenster scrollt nie als Ganzes */
+  overscroll-behavior: none;
+  user-select: none;                /* Bedienelemente lassen sich nicht markieren */
+  -webkit-user-select: none;
+  cursor: default;
+  -webkit-font-smoothing: antialiased;
+}
+.selectable, .selectable * { user-select: text; -webkit-user-select: text; cursor: auto; }
+.num { font-variant-numeric: tabular-nums; }
+.dim { color: var(--ink-2); }
+.strong { font-weight: 600; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+/* ---------------------------------------------------------------- Fenster */
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 24px;
+}
+.main { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---------------------------------------------------------------- Seitenleiste */
+.sidebar { background: var(--side); padding: 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  height: 32px; width: 100%; padding: 0 10px 0 12px;
+  border: 0; border-radius: 5px; background: none; color: var(--ink); font: inherit; text-align: left;
+}
+.nav-item:hover { background: var(--hover); }
+.nav-item:active { background: var(--press); }
+.nav-item.is-active { background: var(--hover); font-weight: 600; }
+.nav-item.is-active::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent);
+}
+.nav-item > span:first-of-type { flex: 1; }
+.icon { flex: none; color: var(--ink-2); }
+.nav-item.is-active .icon { color: var(--accent); }
+.count { color: var(--ink-2); font-size: 12px; font-weight: 400; }
+.live { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+
+/* ---------------------------------------------------------------- Werkzeugleiste */
+.toolbar {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  height: 44px; padding: 0 12px; background: var(--win); border-bottom: 1px solid var(--line);
+}
+.toolbar h1 { font-size: 15px; font-weight: 600; margin: 0 14px 0 2px; }
+.toolbar__fill { flex: 1; }
+.sep { width: 1px; height: 18px; background: var(--line); margin: 0 6px; }
+label.inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+
+/* ---------------------------------------------------------------- Bedienelemente */
+button, select, input[type="text"], input[type="number"] {
+  font: inherit; color: var(--ink); height: var(--ctl); border-radius: 4px;
+}
+button {
+  padding: 0 11px; background: var(--pane); border: 1px solid var(--line); white-space: nowrap;
+}
+button:hover:not(:disabled) { background: color-mix(in srgb, var(--pane) 92%, var(--ink)); }
+button:active:not(:disabled) { background: color-mix(in srgb, var(--pane) 84%, var(--ink)); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 90%, var(--ink)); }
+button.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 80%, var(--ink)); }
+button:disabled { opacity: 0.45; }
+select, input[type="text"], input[type="number"] {
+  padding: 0 8px; background: var(--pane); border: 1px solid var(--line); border-bottom-color: var(--ink-2);
+  user-select: text; -webkit-user-select: text; cursor: text;
+}
+select { cursor: default; }
+input::placeholder { color: var(--ink-2); }
+input[type="text"]:focus, input[type="number"]:focus, select:focus { outline: none; border-color: var(--accent); border-bottom-width: 2px; }
+input[type="checkbox"], input[type="radio"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); vertical-align: -2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------------------------------------------------------------- Hinweisleiste */
+.infobar {
+  flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 12px; background: color-mix(in srgb, var(--warn) 12%, var(--pane)); border-bottom: 1px solid var(--line);
+}
+.infobar__text { flex: 1; min-width: 240px; }
+
+/* ---------------------------------------------------------------- Bereiche */
+.split { flex: 1; min-height: 0; display: flex; }
+.pane { min-width: 0; min-height: 0; background: var(--pane); overflow: auto; }
+.pane.grow { flex: 1; }
+.pane.pad, .pad { padding: 14px 16px; }
+.pane + .pane { border-left: 1px solid var(--line); }
+h2 { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+p { margin: 0 0 8px; }
+.measure, .pane.pad > p { max-width: 68ch; }
+
+.empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+.empty p { max-width: 52ch; }
+.empty p:first-child { font-size: 15px; font-weight: 600; }
+
+/* ---------------------------------------------------------------- Listen */
+table.list { width: 100%; border-collapse: collapse; }
+table.list th {
+  position: sticky; top: 0; z-index: 1; height: 28px; padding: 0 12px;
+  text-align: left; font-weight: 400; color: var(--ink-2); white-space: nowrap;
+  background: var(--pane); box-shadow: inset 0 -1px 0 var(--line);
+}
+table.list td { height: var(--row); padding: 0 12px; white-space: nowrap; border-bottom: 1px solid var(--line-soft); }
+table.list .narrow { width: 1%; text-align: center; }
+table.list tbody tr:hover { background: var(--hover); }
+table.list tbody tr.is-selected { background: var(--select); }
+.signal { display: inline-flex; align-items: center; gap: 8px; }
+
+/* Pegelanzeige: zehn Segmente */
+.meter { display: inline-flex; gap: 2px; align-items: center; }
+.meter i { width: 3px; height: 12px; border-radius: 1px; background: var(--seg-off); }
+.meter.ok i.on { background: var(--ok); }
+.meter.warn i.on { background: var(--warn); }
+.meter.bad i.on { background: var(--bad); }
+
+/* ---------------------------------------------------------------- Inspektor */
+.inspector { flex: none; width: 288px; display: flex; flex-direction: column; }
+.inspector__head { padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
+.inspector__head .strong { font-size: 15px; }
+.props { margin: 0; padding: 10px 14px; display: grid; grid-template-columns: 84px minmax(0, 1fr); row-gap: 6px; }
+.props dt { color: var(--ink-2); }
+.props dd { margin: 0; overflow-wrap: anywhere; }
+.inspector__actions { margin-top: auto; padding: 12px 14px; display: grid; gap: 6px; border-top: 1px solid var(--line-soft); }
+.note { margin: 0; color: var(--warn); }
+
+/* ---------------------------------------------------------------- WLAN */
+.networks { flex: none; width: 340px; }
+.spectrum { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 6px; max-width: 620px; margin: 18px 0 10px; }
+.spectrum__col { display: grid; justify-items: center; gap: 4px; }
+.spectrum__value { height: 16px; font-size: 12px; color: var(--ink-2); }
+.spectrum__stack { display: grid; gap: 2px; width: 100%; }
+.spectrum__stack i { height: 7px; border-radius: 1px; background: var(--seg-off); }
+.spectrum__stack i.on { background: var(--ink-2); }
+.spectrum__col.is-own .spectrum__stack i.on { background: var(--accent); }
+.spectrum__ch { width: 22px; height: 20px; line-height: 20px; text-align: center; border-radius: 4px; color: var(--ink-2); }
+.spectrum__col.is-own .spectrum__ch { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.spectrum__col.is-best .spectrum__ch { box-shadow: inset 0 0 0 2px var(--ok); color: var(--ink); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; }
+.legend__own::before, .legend__best::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
+.legend__own::before { background: var(--accent); }
+.legend__best::before { box-shadow: inset 0 0 0 2px var(--ok); }
+
+/* ---------------------------------------------------------------- Einstellungen */
+.settings h2 { margin-top: 22px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); max-width: 720px; }
+.settings h2:first-child { margin-top: 0; }
+.form { display: grid; grid-template-columns: 150px minmax(0, 560px); gap: 8px 12px; align-items: start; margin: 10px 0; }
+.form > label { line-height: var(--ctl); color: var(--ink-2); }
+.form__field { display: flex; flex-wrap: wrap; gap: 6px; }
+.form__field input[type="text"] { flex: 1 1 260px; }
+.form__field p { flex-basis: 100%; margin: 0; }
+.checklist { margin: 4px 0 12px; padding-left: 18px; }
+.checklist li { padding: 2px 0; }
+.checklist label { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---------------------------------------------------------------- Unterer Bereich */
+.dock { flex: none; position: relative; display: flex; flex-direction: column; background: var(--pane); border-top: 1px solid var(--line); }
+.dock__resize { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: ns-resize; z-index: 2; }
+.dock__tabs { flex: none; display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 6px; background: var(--win); border-bottom: 1px solid var(--line); }
+.dock:not([style]) .dock__tabs { border-bottom: 0; }
+.dock__tabs button { height: 24px; border-color: transparent; background: none; padding: 0 9px; }
+.dock__tabs button:hover:not(:disabled) { background: var(--hover); }
+.dock__tabs button[role="tab"] { position: relative; color: var(--ink-2); }
+.dock__tabs button[role="tab"].is-active { color: var(--ink); font-weight: 600; }
+.dock__tabs button[role="tab"].is-active::after { content: ""; position: absolute; left: 9px; right: 9px; bottom: -4px; height: 2px; background: var(--accent); }
+.hints { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 4px 0; list-style: none; }
+.hints li { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 10px; padding: 5px 12px; border-bottom: 1px solid var(--line-soft); }
+.hints li:last-child { border-bottom: 0; }
+.hints li > span:last-child { max-width: 110ch; }
+.hints__level { font-weight: 600; }
+.hints__level.info { color: var(--ink-2); }
+.console { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; font: 12px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; }
+
+/* ---------------------------------------------------------------- Statusleiste */
+.statusbar {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 10px;
+  background: var(--side); border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2);
+}
+.statusbar__busy { color: var(--ink); }
+
+.toast {
+  position: fixed; right: 14px; bottom: 36px; z-index: 20; max-width: 420px;
+  padding: 9px 12px; border-radius: 6px; background: var(--ink); color: var(--pane);
+  user-select: text; -webkit-user-select: text;
+}
+
+/* Schmales Fenster: Inspektor und Netzliste ruecken unter die Hauptliste */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 52px minmax(0, 1fr); }
+  .nav-item { padding: 0; justify-content: center; }
+  .nav-item > span { display: none; }
+  .split { flex-direction: column; }
+  .inspector, .networks { width: auto; max-height: 42%; }
+  .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
+  .toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Auswahl aus wenigen festen Werten */
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--pane); }
+.segmented button { border: 0; border-radius: 0; background: none; padding: 0 14px; }
+.segmented button + button { border-left: 1px solid var(--line); }
+.segmented button[aria-pressed="true"] { background: var(--select); font-weight: 600; }
+.form > .form__label { line-height: var(--ctl); color: var(--ink-2); }
+.form__hint { line-height: var(--ctl); }
