@@ -1,0 +1,83 @@
+name: Release (Windows)
+
+# Baut die App fuer Windows und legt einen GitHub-Release mit Installer und portabler EXE an.
+# Ausloeser: ein Tag wie v0.1.0 pushen, oder manuell ueber "Run workflow".
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # Release anlegen und Dateien hochladen
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Version und Tag bestimmen
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          # Bei einem Tag-Push gilt der Tag, beim manuellen Start die Version aus tauri.conf.json
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$version" }
+          if ($tag -ne "v$version") {
+            Write-Error "Tag '$tag' passt nicht zur Version '$version' in src-tauri/tauri.conf.json. Version anpassen oder Tag v$version verwenden."
+            exit 1
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Rust einrichten (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust-Build cachen
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Frontend-Abhaengigkeiten installieren
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) { npm ci } else { npm install }
+
+      - name: App bauen und Release anlegen
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ steps.meta.outputs.tag }}
+          releaseName: MusicCast Analyzer ${{ steps.meta.outputs.tag }}
+          releaseBody: |
+            Windows-Build (x64).
+
+            - `*-setup.exe`: Installer
+            - `*_portable.exe`: einzelne Datei ohne Installation, braucht die WebView2-Runtime (bei Windows 10/11 in der Regel vorhanden)
+
+            Die Dateien sind nicht signiert. Windows SmartScreen zeigt deshalb beim ersten Start eine Warnung.
+          releaseDraft: false
+          prerelease: false
+
+      - name: Portable EXE an den Release anhaengen
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = "src-tauri/target/release/musiccast-analyzer.exe"
+          if (-not (Test-Path $exe)) { Write-Error "$exe wurde nicht gebaut."; exit 1 }
+          $out = "MusicCast-Analyzer_${{ steps.meta.outputs.version }}_x64_portable.exe"
+          Copy-Item $exe $out
+          gh release upload "${{ steps.meta.outputs.tag }}" $out --clobber
